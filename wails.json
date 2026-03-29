@@ -1,0 +1,6 @@
+{
+  "appName": "HEIC Converter",
+  "main": "main.go",
+  "frontend": {"dir": "frontend"},
+  "build": {"wailsArgs": ["build"]}
+}
