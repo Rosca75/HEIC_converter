@@ -23,8 +23,9 @@ if (-not (Test-Path "go.mod")) {
 
 # Vérification de la présence des binaires libheif (Windows)
 if ($IsWindows) {
-    $libheifPath = (Get-Command libheif -ErrorAction SilentlyContinue)
-    if (-not $libheifPath) {
+    try {
+        $null = (Get-Command libheif 2>&1)
+    } catch {
         Write-Host "ℹ️ Libheif n'est pas dans le PATH. Si l'application échoue, installez-le via : choco install libheif" -ForegroundColor Yellow
     }
 }
