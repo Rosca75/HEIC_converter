@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HEIC Converter</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="panel">
+        <h1>HEIC Converter</h1>
+        <p class="subtitle">Convert one HEIC file or an entire folder to JPG.</p>
+
+        <label for="inputPath">Input file or folder</label>
+        <input type="text" id="inputPath" placeholder="/path/to/file.heic or folder" />
+
+        <label for="outputDir">Output directory</label>
+        <input type="text" id="outputDir" placeholder="/path/to/output" />
+
+        <label for="quality">JPEG quality: <strong id="qualityValue">85</strong></label>
+        <input type="range" id="quality" min="60" max="100" value="85" />
+
+        <button id="convertBtn" type="button">Convert</button>
+        <pre id="status" aria-live="polite"></pre>
+      </section>
+    </main>
+
+    <script src="/wails/runtime.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
