@@ -1,6 +1,12 @@
 {
-  "appName": "HEIC Converter",
-  "main": "main.go",
-  "frontend": {"dir": "frontend"},
-  "build": {"wailsArgs": ["build"]}
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "heic-converter",
+  "outputfilename": "heic-converter",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "Rosca75"
+  }
 }
