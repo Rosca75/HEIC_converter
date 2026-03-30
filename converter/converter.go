@@ -1,45 +1,123 @@
 package converter
 
 import (
-    "fmt"
-    "os"
-    "github.com/strukturag/libheif/go-libheif"
-    "github.com/dsoprea/go-exif/v3"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	libheif "github.com/strukturag/libheif/go-libheif"
 )
 
-// ConvertHEICtoJPG convertit un fichier HEIC en JPG en conservant les métadonnées EXIF.
-func ConvertHEICtoJPG(inputPath, outputPath string, quality int) (string, error) {
-    heifFile, err := os.Open(inputPath)
-    if err != nil {
-        return "", fmt.Errorf("failed to open HEIC file: %v", err)
-    }
-    defer heifFile.Close()
+type FileResult struct {
+	Input  string `json:"input"`
+	Output string `json:"output"`
+}
 
-    heifImage, err := libheif.Decode(heifFile)
-    if err != nil {
-        return "", fmt.Errorf("failed to decode HEIC: %v", err)
-    }
+type ConversionSummary struct {
+	Converted []FileResult `json:"converted"`
+	Skipped   []string     `json:"skipped"`
+}
 
-    exifData, err := exif.SearchAndExtractExif(heifFile)
-    if err != nil && err != exif.ErrNoExif {
-        return "", fmt.Errorf("failed to extract EXIF: %v", err)
-    }
+func ConvertPath(inputPath, outputDir string, quality int) (ConversionSummary, error) {
+	if quality < 1 || quality > 100 {
+		return ConversionSummary{}, fmt.Errorf("quality must be between 1 and 100")
+	}
 
-    outFile, err := os.Create(outputPath)
-    if err != nil {
-        return "", fmt.Errorf("failed to create output file: %v", err)
-    }
-    defer outFile.Close()
+	info, err := os.Stat(inputPath)
+	if err != nil {
+		return ConversionSummary{}, fmt.Errorf("cannot access input path: %w", err)
+	}
 
-    if err := libheif.EncodeJpeg(outFile, heifImage, quality); err != nil {
-        return "", fmt.Errorf("failed to encode JPG: %v", err)
-    }
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return ConversionSummary{}, fmt.Errorf("cannot create output directory: %w", err)
+	}
 
-    if exifData != nil {
-        if err := exif.WriteExif(outFile, exifData); err != nil {
-            return "", fmt.Errorf("failed to write EXIF: %v", err)
-        }
-    }
+	summary := ConversionSummary{}
+	if !info.IsDir() {
+		out, convErr := convertOne(inputPath, outputDir, quality)
+		if convErr != nil {
+			return ConversionSummary{}, convErr
+		}
+		summary.Converted = append(summary.Converted, FileResult{Input: inputPath, Output: out})
+		return summary, nil
+	}
 
-    return fmt.Sprintf("Conversion réussie: %s -> %s", inputPath, outputPath), nil
+	walkErr := filepath.WalkDir(inputPath, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !isHEIC(path) {
+			summary.Skipped = append(summary.Skipped, path)
+			return nil
+		}
+
+		out, err := convertOne(path, outputDir, quality)
+		if err != nil {
+			return err
+		}
+		summary.Converted = append(summary.Converted, FileResult{Input: path, Output: out})
+		return nil
+	})
+	if walkErr != nil {
+		return ConversionSummary{}, walkErr
+	}
+
+	if len(summary.Converted) == 0 {
+		return ConversionSummary{}, errors.New("no HEIC/HEIF files found in the selected directory")
+	}
+
+	return summary, nil
+}
+
+func convertOne(inputPath, outputDir string, quality int) (string, error) {
+	if !isHEIC(inputPath) {
+		return "", fmt.Errorf("unsupported file extension for %s (expected .heic or .heif)", inputPath)
+	}
+
+	in, err := os.Open(inputPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to open input file %s: %w", inputPath, err)
+	}
+	defer in.Close()
+
+	heifImage, err := libheif.Decode(in)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode HEIC file %s: %w", inputPath, err)
+	}
+
+	name := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath)) + ".jpg"
+	outputPath := filepath.Join(outputDir, name)
+
+	out, err := os.Create(outputPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create output file %s: %w", outputPath, err)
+	}
+
+	encodeErr := libheif.EncodeJpeg(out, heifImage, quality)
+	closeErr := out.Close()
+	if encodeErr != nil {
+		return "", fmt.Errorf("failed to encode JPEG for %s: %w", inputPath, encodeErr)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("failed to close output file %s: %w", outputPath, closeErr)
+	}
+
+	rawExif, err := ExtractExif(inputPath)
+	if err == nil && len(rawExif) > 0 {
+		if err := InjectExif(outputPath, rawExif); err != nil {
+			return "", fmt.Errorf("failed to preserve EXIF for %s: %w", inputPath, err)
+		}
+	}
+
+	return outputPath, nil
+}
+
+func isHEIC(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".heic" || ext == ".heif"
 }

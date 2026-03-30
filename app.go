@@ -1,25 +1,23 @@
 package main
 
 import (
-    "context"
+	"context"
+
+	"github.com/Rosca75/HEIC_converter/converter"
 )
 
 type App struct {
-    ctx context.Context
+	ctx context.Context
 }
 
 func NewApp() *App {
-    return &App{}
+	return &App{}
 }
 
 func (a *App) startup(ctx context.Context) {
-    a.ctx = ctx
+	a.ctx = ctx
 }
 
-func (a *App) ConvertHEICtoJPG(inputPath, outputPath string, quality int) (string, error) {
-    result, err := converter.ConvertHEICtoJPG(inputPath, outputPath, quality)
-    if err != nil {
-        return "", err
-    }
-    return result, nil
+func (a *App) Convert(inputPath, outputDir string, quality int) (converter.ConversionSummary, error) {
+	return converter.ConvertPath(inputPath, outputDir, quality)
 }
