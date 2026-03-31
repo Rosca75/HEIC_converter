@@ -5,7 +5,7 @@ go 1.21
 require (
 	github.com/adrium/goheif v0.0.0-20230113233934-ca402e77a786
 	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
-	github.com/wailsapp/wails/v2 v2.9.2
+	github.com/wailsapp/wails/v2 v2.12.0
 )
 
 require (
