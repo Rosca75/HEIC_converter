@@ -10,13 +10,23 @@
     <main class="app">
       <section class="panel">
         <h1>HEIC Converter</h1>
-        <p class="subtitle">Convert one HEIC file or an entire folder to JPG.</p>
+        <p class="subtitle">Convert one HEIC file or an entire folder to your chosen format.</p>
+
+        <div id="imageMagickStatus" class="status-badge"></div>
 
         <label for="inputPath">Input file or folder</label>
         <input type="text" id="inputPath" placeholder="/path/to/file.heic or folder" />
 
         <label for="outputDir">Output directory</label>
         <input type="text" id="outputDir" placeholder="/path/to/output" />
+
+        <label for="format">Output format</label>
+        <select id="format">
+          <option value="jpg">JPG</option>
+          <option value="png">PNG</option>
+          <option value="webp">WebP</option>
+          <option value="tiff">TIFF</option>
+        </select>
 
         <label for="quality">JPEG quality: <strong id="qualityValue">85</strong></label>
         <input type="range" id="quality" min="60" max="100" value="85" />

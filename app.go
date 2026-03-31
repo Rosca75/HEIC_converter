@@ -18,6 +18,13 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
-func (a *App) Convert(inputPath, outputDir string, quality int) (converter.ConversionSummary, error) {
-	return converter.ConvertPath(inputPath, outputDir, quality)
+func (a *App) Convert(inputPath, outputDir, format string, quality int) (converter.ConversionSummary, error) {
+	return converter.ConvertPath(inputPath, outputDir, format, quality)
+}
+
+func (a *App) CheckImageMagick() string {
+	if err := converter.CheckImageMagick(); err != nil {
+		return err.Error()
+	}
+	return ""
 }
