@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 
-	exif "github.com/dsoprea/go-exif/v3"
+	"github.com/adrium/goheif"
+	"github.com/rwcarlsen/goexif/exif"
 )
 
+// ExtractExif extracts raw EXIF bytes from a HEIC/HEIF file.
 func ExtractExif(filePath string) ([]byte, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -14,15 +16,23 @@ func ExtractExif(filePath string) ([]byte, error) {
 	}
 	defer file.Close()
 
-	rawExif, err := exif.SearchAndExtractExif(file)
-	if err != nil {
-		if err == exif.ErrNoExif {
-			return nil, nil
-		}
-		return nil, err
+	rawExif, err := goheif.ExtractExif(file)
+	if err != nil || len(rawExif) == 0 {
+		return nil, nil
 	}
 
 	return rawExif, nil
+}
+
+// GetEXIF parses EXIF metadata from a JPEG file.
+func GetEXIF(srcPath string) (*exif.Exif, error) {
+	f, err := os.Open(srcPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	return exif.Decode(f)
 }
 
 func InjectExif(jpegPath string, rawExif []byte) error {

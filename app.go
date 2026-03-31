@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 
-	"github.com/Rosca75/HEIC_converter/converter"
+	"heic-converter/converter"
 )
 
 type App struct {

@@ -3,11 +3,12 @@ package converter
 import (
 	"errors"
 	"fmt"
+	"image/jpeg"
 	"os"
 	"path/filepath"
 	"strings"
 
-	libheif "github.com/strukturag/libheif/go-libheif/v2"
+	"github.com/adrium/goheif"
 )
 
 type FileResult struct {
@@ -85,7 +86,7 @@ func convertOne(inputPath, outputDir string, quality int) (string, error) {
 	}
 	defer in.Close()
 
-	heifImage, err := libheif.Decode(in)
+	img, err := goheif.Decode(in)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode HEIC file %s: %w", inputPath, err)
 	}
@@ -98,7 +99,7 @@ func convertOne(inputPath, outputDir string, quality int) (string, error) {
 		return "", fmt.Errorf("failed to create output file %s: %w", outputPath, err)
 	}
 
-	encodeErr := libheif.EncodeJpeg(out, heifImage, quality)
+	encodeErr := jpeg.Encode(out, img, &jpeg.Options{Quality: quality})
 	closeErr := out.Close()
 	if encodeErr != nil {
 		return "", fmt.Errorf("failed to encode JPEG for %s: %w", inputPath, encodeErr)
