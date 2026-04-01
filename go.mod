@@ -1,10 +1,14 @@
 module heic-converter
 
-go 1.22.0
+go 1.22.3
 
 toolchain go1.24.7
 
-require github.com/wailsapp/wails/v2 v2.12.0
+require (
+	github.com/jdeng/goheif v0.0.0-20260309214039-46ce8d592019
+	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
+	github.com/wailsapp/wails/v2 v2.12.0
+)
 
 require (
 	github.com/bep/debounce v1.2.1 // indirect

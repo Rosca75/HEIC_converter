@@ -1,12 +1,10 @@
 package converter
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,7 +33,11 @@ func GetFileMeta(paths []string, onProgress func(done, total int)) ([]FileMeta, 
 	errs := make([]error, total)
 	var wg sync.WaitGroup
 	var cnt atomic.Int32
-	sem := make(chan struct{}, 4) // max 4 concurrent ImageMagick processes
+	workers := runtime.NumCPU()
+	if workers > 16 {
+		workers = 16
+	}
+	sem := make(chan struct{}, workers)
 	for i, p := range expanded {
 		wg.Add(1)
 		go func(i int, p string) {
@@ -58,6 +60,11 @@ func GetFileMeta(paths []string, onProgress func(done, total int)) ([]FileMeta, 
 		}
 	}
 	return metas, nil
+}
+
+// ExpandPaths resolves directory paths to their contained HEIC files (exported for app.go).
+func ExpandPaths(paths []string) ([]string, error) {
+	return expandPaths(paths)
 }
 
 // expandPaths resolves any directory paths to the HEIC files they contain.
@@ -96,9 +103,33 @@ func listHEICFiles(dir string) ([]string, error) {
 	return paths, err
 }
 
-// getOneFileMeta extracts metadata for a single HEIC file using one identify call.
+// GetOneFileMeta extracts metadata for a single HEIC file (exported for streaming use).
+func GetOneFileMeta(p string) (FileMeta, error) {
+	return getOneFileMeta(p)
+}
+
+// getOneFileMeta tries the fast pure-Go path first, falling back to ImageMagick.
 func getOneFileMeta(p string) (FileMeta, error) {
 	m := FileMeta{Path: p, Name: filepath.Base(p)}
+
+	w, h, cam, date, thumb, err := extractMetaFast(p)
+	if err == nil && w > 0 {
+		m.Width, m.Height, m.Camera, m.CreatedAt = w, h, cam, date
+		m.ThumbBase64 = thumb
+		if m.ThumbBase64 == "" {
+			m.ThumbBase64 = generateThumb(p)
+		}
+		if m.CreatedAt == "" {
+			if info, e := os.Stat(p); e == nil {
+				m.CreatedAt = info.ModTime().UTC().Format(time.RFC3339)
+			} else {
+				m.CreatedAt = "unknown"
+			}
+		}
+		return m, nil
+	}
+
+	// Full ImageMagick fallback for non-standard HEIC files.
 	m.Width, m.Height, m.Camera, m.CreatedAt = parseVerboseInfo(p)
 	if m.CreatedAt == "" {
 		if info, e := os.Stat(p); e == nil {
@@ -109,41 +140,4 @@ func getOneFileMeta(p string) (FileMeta, error) {
 	}
 	m.ThumbBase64 = generateThumb(p)
 	return m, nil
-}
-
-// parseVerboseInfo extracts resolution and EXIF info using a single identify -verbose call.
-func parseVerboseInfo(p string) (width, height int, camera, createdAt string) {
-	out, err := exec.Command("magick", "identify", "-verbose", p+"[0]").CombinedOutput()
-	if err != nil {
-		return 0, 0, "unknown", ""
-	}
-	camera = "unknown"
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if after, ok := strings.CutPrefix(line, "Geometry:"); ok {
-			fmt.Sscanf(strings.TrimSpace(after), "%dx%d", &width, &height)
-		}
-		if after, ok := strings.CutPrefix(line, "exif:Model:"); ok {
-			camera = strings.TrimSpace(after)
-		}
-		if after, ok := strings.CutPrefix(line, "date:create:"); ok {
-			createdAt = strings.TrimSpace(after)
-		}
-	}
-	return width, height, camera, createdAt
-}
-
-// generateThumb returns a base64 data URL of a 48×48 JPEG thumbnail.
-func generateThumb(p string) string {
-	cmd := exec.Command("magick", "convert", p+"[0]",
-		"-thumbnail", "48x48^",
-		"-gravity", "center",
-		"-extent", "48x48",
-		"jpg:-",
-	)
-	data, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)
 }
