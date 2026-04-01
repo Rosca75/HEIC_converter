@@ -3,12 +3,10 @@ package converter
 import (
 	"errors"
 	"fmt"
-	"image/jpeg"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/adrium/goheif"
 )
 
 type FileResult struct {
@@ -21,7 +19,7 @@ type ConversionSummary struct {
 	Skipped   []string     `json:"skipped"`
 }
 
-func ConvertPath(inputPath, outputDir string, quality int) (ConversionSummary, error) {
+func ConvertPath(inputPath, outputDir, format string, quality int) (ConversionSummary, error) {
 	if quality < 1 || quality > 100 {
 		return ConversionSummary{}, fmt.Errorf("quality must be between 1 and 100")
 	}
@@ -37,7 +35,7 @@ func ConvertPath(inputPath, outputDir string, quality int) (ConversionSummary, e
 
 	summary := ConversionSummary{}
 	if !info.IsDir() {
-		out, convErr := convertOne(inputPath, outputDir, quality)
+		out, convErr := convertOne(inputPath, outputDir, format, quality)
 		if convErr != nil {
 			return ConversionSummary{}, convErr
 		}
@@ -57,7 +55,7 @@ func ConvertPath(inputPath, outputDir string, quality int) (ConversionSummary, e
 			return nil
 		}
 
-		out, err := convertOne(path, outputDir, quality)
+		out, err := convertOne(path, outputDir, format, quality)
 		if err != nil {
 			return err
 		}
@@ -75,44 +73,23 @@ func ConvertPath(inputPath, outputDir string, quality int) (ConversionSummary, e
 	return summary, nil
 }
 
-func convertOne(inputPath, outputDir string, quality int) (string, error) {
+func convertOne(inputPath, outputDir, format string, quality int) (string, error) {
 	if !isHEIC(inputPath) {
 		return "", fmt.Errorf("unsupported file extension for %s (expected .heic or .heif)", inputPath)
 	}
 
-	in, err := os.Open(inputPath)
+	ext := format
+	if ext == "jpeg" {
+		ext = "jpg"
+	}
+
+	baseName := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
+	outputPath := filepath.Join(outputDir, baseName+"."+ext)
+
+	cmd := exec.Command("magick", "convert", inputPath, "-quality", fmt.Sprintf("%d", quality), outputPath)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("failed to open input file %s: %w", inputPath, err)
-	}
-	defer in.Close()
-
-	img, err := goheif.Decode(in)
-	if err != nil {
-		return "", fmt.Errorf("failed to decode HEIC file %s: %w", inputPath, err)
-	}
-
-	name := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath)) + ".jpg"
-	outputPath := filepath.Join(outputDir, name)
-
-	out, err := os.Create(outputPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to create output file %s: %w", outputPath, err)
-	}
-
-	encodeErr := jpeg.Encode(out, img, &jpeg.Options{Quality: quality})
-	closeErr := out.Close()
-	if encodeErr != nil {
-		return "", fmt.Errorf("failed to encode JPEG for %s: %w", inputPath, encodeErr)
-	}
-	if closeErr != nil {
-		return "", fmt.Errorf("failed to close output file %s: %w", outputPath, closeErr)
-	}
-
-	rawExif, err := ExtractExif(inputPath)
-	if err == nil && len(rawExif) > 0 {
-		if err := InjectExif(outputPath, rawExif); err != nil {
-			return "", fmt.Errorf("failed to preserve EXIF for %s: %w", inputPath, err)
-		}
+		return "", fmt.Errorf("ImageMagick error: %w\n%s", err, string(output))
 	}
 
 	return outputPath, nil
@@ -121,4 +98,28 @@ func convertOne(inputPath, outputDir string, quality int) (string, error) {
 func isHEIC(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	return ext == ".heic" || ext == ".heif"
+}
+
+// ConvertFiles converts a list of individual HEIC file paths to the target format.
+func ConvertFiles(paths []string, outputDir, format string, quality int) (ConversionSummary, error) {
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return ConversionSummary{}, fmt.Errorf("cannot create output directory: %w", err)
+	}
+	summary := ConversionSummary{}
+	for _, p := range paths {
+		out, err := convertOne(p, outputDir, format, quality)
+		if err != nil {
+			return ConversionSummary{}, fmt.Errorf("error converting %s: %w", p, err)
+		}
+		summary.Converted = append(summary.Converted, FileResult{Input: p, Output: out})
+	}
+	return summary, nil
+}
+
+func CheckImageMagick() error {
+	cmd := exec.Command("magick", "--version")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ImageMagick is not installed or not in PATH.\nDownload: https://imagemagick.org/script/download.php#windows")
+	}
+	return nil
 }

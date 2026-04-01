@@ -16,14 +16,20 @@ func main() {
 
 	err := wails.Run(&options.App{
 		Title:     "HEIC Converter",
-		Width:     860,
-		Height:    620,
+		Width:     1000,
+		Height:    760,
 		OnStartup: app.startup,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
 		Bind: []interface{}{
 			app,
+		},
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop:     true,
+			DisableWebViewDrop: false,
+			CSSDropProperty:    "--wails-drop-target",
+			CSSDropValue:       "drop",
 		},
 	})
 	if err != nil {
