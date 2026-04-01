@@ -51,7 +51,7 @@ func extractMetaFast(path string) (width, height int, camera, createdAt, thumbBa
 }
 
 // extractEmbeddedThumb scans HEIC item list for a "thmb" reference pointing to the
-// primary item, returning the raw bytes as a base64 JPEG data URL.
+// primary item. Only returns data when bytes are a valid JPEG (FF D8 FF magic).
 func extractEmbeddedThumb(hf *heif.File, primary *heif.Item) string {
 	for id := uint32(1); id <= 50; id++ {
 		item, err := hf.ItemByID(id)
@@ -63,12 +63,18 @@ func extractEmbeddedThumb(hf *heif.File, primary *heif.Item) string {
 			continue
 		}
 		for _, toID := range ref.ToItemIDs {
-			if toID == primary.ID {
-				data, err := hf.GetItemData(item)
-				if err == nil && len(data) > 0 {
-					return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)
-				}
+			if toID != primary.ID {
+				continue
 			}
+			data, err := hf.GetItemData(item)
+			if err != nil || len(data) < 3 {
+				continue
+			}
+			// Verify JPEG SOI marker; non-JPEG thumbnails (e.g. HEVC) fall back to ImageMagick.
+			if data[0] != 0xFF || data[1] != 0xD8 || data[2] != 0xFF {
+				continue
+			}
+			return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data)
 		}
 	}
 	return ""
