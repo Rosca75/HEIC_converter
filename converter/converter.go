@@ -100,6 +100,22 @@ func isHEIC(path string) bool {
 	return ext == ".heic" || ext == ".heif"
 }
 
+// ConvertFiles converts a list of individual HEIC file paths to the target format.
+func ConvertFiles(paths []string, outputDir, format string, quality int) (ConversionSummary, error) {
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return ConversionSummary{}, fmt.Errorf("cannot create output directory: %w", err)
+	}
+	summary := ConversionSummary{}
+	for _, p := range paths {
+		out, err := convertOne(p, outputDir, format, quality)
+		if err != nil {
+			return ConversionSummary{}, fmt.Errorf("error converting %s: %w", p, err)
+		}
+		summary.Converted = append(summary.Converted, FileResult{Input: p, Output: out})
+	}
+	return summary, nil
+}
+
 func CheckImageMagick() error {
 	cmd := exec.Command("magick", "--version")
 	if err := cmd.Run(); err != nil {

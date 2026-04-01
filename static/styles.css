@@ -1,82 +1,126 @@
+/* --- Tokens --- */
 :root {
-  color-scheme: light;
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  --color-bg:        #f5f7ff;
+  --color-bg-alt:    #eef1ff;
+  --color-surface:   #ffffff;
+  --color-border:    #d6def5;
+  --color-accent:    #3c67ff;
+  --color-accent-dim:#a9b8ef;
+  --color-text:      #1a1f36;
+  --color-text-muted:#4b587c;
+  --color-danger:    #c0392b;
+  --color-ok:        #1d7a3a;
+  --color-row-alt:   #f9faff;
+  --font-mono: "JetBrains Mono", "Fira Mono", "Consolas", monospace;
+  --font-size-base: 0.9rem;
+  --font-size-sm:   0.82rem;
+  --font-size-lg:   1.6rem;
+  --space-xs: 4px;  --space-sm: 8px;  --space-md: 14px;  --space-lg: 24px;
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px;
 }
+*, *::before, *::after { box-sizing: border-box; }
 
+/* --- Base --- */
 body {
   margin: 0;
   min-height: 100vh;
-  background: linear-gradient(180deg, #f5f7ff 0%, #eef1ff 100%);
+  background: linear-gradient(180deg, var(--color-bg) 0%, var(--color-bg-alt) 100%);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+  color: var(--color-text);
 }
 
-.app {
-  display: grid;
-  place-items: center;
-  min-height: 100vh;
-  padding: 24px;
-}
+/* --- Outer layout --- */
+.app { display: grid; place-items: center; min-height: 100vh; padding: var(--space-lg); }
 
+/* --- Card --- */
 .panel {
-  width: min(640px, 100%);
-  background: #fff;
-  border-radius: 14px;
-  padding: 24px;
+  width: min(900px, 100%);
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
   box-shadow: 0 10px 35px rgba(25, 44, 96, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
 }
 
-h1 {
-  margin: 0;
-  font-size: 1.6rem;
+/* --- Zone A — header --- */
+#zone-header h1 { margin: 0; font-size: var(--font-size-lg); font-family: var(--font-mono); }
+#zone-header .subtitle { margin: var(--space-xs) 0 var(--space-sm); color: var(--color-text-muted); }
+.status-badge {
+  font-size: var(--font-size-sm);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  display: inline-block;
 }
+.status-ok    { background: #d4f0dc; color: var(--color-ok); }
+.status-error { background: #fde8e6; color: var(--color-danger); }
 
-.subtitle {
-  margin-top: 8px;
-  margin-bottom: 18px;
-  color: #4b587c;
+/* --- Zone B — input selection --- */
+.btn-row { display: flex; gap: var(--space-sm); margin-bottom: var(--space-sm); }
+#dropZone {
+  border: 2px dashed var(--color-accent);
+  border-radius: var(--radius-md);
+  padding: 18px;
+  text-align: center;
+  color: var(--color-text-muted);
+  cursor: default;
+  transition: background 0.15s;
 }
+#dropZone.drag-over { background: var(--color-bg-alt); }
 
-label {
-  display: block;
-  font-size: 0.95rem;
-  margin-top: 12px;
-  margin-bottom: 6px;
+/* --- Zone C — file bundle table --- */
+#zone-table { overflow-y: auto; max-height: 280px; }
+#fileTable { width: 100%; border-collapse: collapse; font-size: var(--font-size-sm); }
+#fileTable th, #fileTable td {
+  padding: 5px var(--space-sm);
+  border-bottom: 1px solid #dee5ff;
+  text-align: left;
+  vertical-align: middle;
 }
-
-input[type='text'],
-input[type='range'] {
-  width: 100%;
-  box-sizing: border-box;
+#fileTable tr:nth-child(even) { background: var(--color-row-alt); }
+.path-cell { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty-msg { color: var(--color-text-muted); text-align: center; }
+.btn-remove {
+  background: none; border: none; color: var(--color-danger);
+  cursor: pointer; font-size: var(--font-size-sm);
+  padding: 0 var(--space-xs); width: auto; margin: 0;
 }
+.thumb-img { image-rendering: pixelated; display: block; }
 
-input[type='text'] {
-  border: 1px solid #d6def5;
-  border-radius: 10px;
-  padding: 10px 12px;
+/* --- Zone D — output & conversion options --- */
+.options-row {
+  display: flex; align-items: center;
+  gap: var(--space-sm); flex-wrap: wrap; margin-bottom: var(--space-sm);
 }
+.path-badge {
+  background: var(--color-bg); border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm); padding: var(--space-xs) var(--space-sm);
+  font-size: var(--font-size-sm); color: var(--color-text-muted); flex: 1;
+}
+label { font-size: var(--font-size-sm); color: var(--color-text-muted); }
+select {
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+  padding: var(--space-xs) var(--space-sm); background: var(--color-surface);
+  font-family: var(--font-mono); font-size: var(--font-size-sm); color: var(--color-text);
+}
+input[type='range'] { flex: 1; min-width: 100px; }
 
+/* --- Buttons --- */
 button {
-  margin-top: 18px;
-  width: 100%;
-  border: 0;
-  border-radius: 10px;
-  padding: 12px;
-  color: #fff;
-  font-weight: 600;
-  background: #3c67ff;
-  cursor: pointer;
+  border: 0; border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  color: var(--color-surface); font-weight: 600;
+  font-family: var(--font-mono); background: var(--color-accent); cursor: pointer;
 }
+button:disabled { background: var(--color-accent-dim); cursor: not-allowed; }
+.btn-secondary { background: var(--color-text-muted); }
 
-button:disabled {
-  background: #a9b8ef;
-  cursor: not-allowed;
-}
-
+/* --- Zone E — action & status --- */
+#zone-action button { width: 100%; margin-bottom: var(--space-sm); }
 #status {
-  margin-top: 14px;
-  padding: 12px;
-  background: #f5f7ff;
-  border-radius: 10px;
-  border: 1px solid #dee5ff;
-  min-height: 64px;
-  white-space: pre-wrap;
+  padding: var(--space-md); background: var(--color-bg);
+  border-radius: var(--radius-md); border: 1px solid #dee5ff;
+  min-height: 64px; white-space: pre-wrap; margin: 0;
 }
