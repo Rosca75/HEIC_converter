@@ -1,16 +1,18 @@
 package main
 
 // JS↔Go API surface:
-// window.go.main.App.CheckImageMagick()          → string
-// window.go.main.App.OpenFileDialog()            → []string
-// window.go.main.App.OpenFolderDialog()          → string
-// window.go.main.App.OpenOutputFolderDialog()    → string
-// window.go.main.App.GetFileMeta(paths)          → []FileMeta
-// window.go.main.App.ConvertFiles(paths,…)       → ConversionSummary
-// window.go.main.App.Convert(inputPath,…)        → ConversionSummary (legacy)
+// window.go.main.App.CheckImageMagick()             → string
+// window.go.main.App.OpenFileDialog()               → []string
+// window.go.main.App.OpenFolderDialog()             → string
+// window.go.main.App.OpenOutputFolderDialog()       → string
+// window.go.main.App.GetFileMeta(paths)             → []FileMeta
+// window.go.main.App.GetFileMetaStreaming(paths)    → error (emits meta:start/meta:file/meta:done)
+// window.go.main.App.ConvertFiles(paths,…)          → ConversionSummary
+// window.go.main.App.Convert(inputPath,…)           → ConversionSummary (legacy)
 
 import (
 	"context"
+	"sync"
 
 	"heic-converter/converter"
 
@@ -81,4 +83,29 @@ func (a *App) ConvertFiles(paths []string, outputDir, format string, quality int
 // Convert is the legacy single-path/folder conversion method.
 func (a *App) Convert(inputPath, outputDir, format string, quality int) (converter.ConversionSummary, error) {
 	return converter.ConvertPath(inputPath, outputDir, format, quality)
+}
+
+// GetFileMetaStreaming expands paths and emits meta:start, one meta:file per file,
+// then meta:done — allowing the UI to render rows as they arrive.
+func (a *App) GetFileMetaStreaming(paths []string) error {
+	expanded, err := converter.ExpandPaths(paths)
+	if err != nil {
+		return err
+	}
+	runtime.EventsEmit(a.ctx, "meta:start", len(expanded))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 16)
+	for _, p := range expanded {
+		wg.Add(1)
+		go func(p string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			m, _ := converter.GetOneFileMeta(p)
+			runtime.EventsEmit(a.ctx, "meta:file", m)
+		}(p)
+	}
+	wg.Wait()
+	runtime.EventsEmit(a.ctx, "meta:done")
+	return nil
 }
