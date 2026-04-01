@@ -60,6 +60,7 @@ body {
 /* --- Zone B — input selection --- */
 .btn-row { display: flex; gap: var(--space-sm); margin-bottom: var(--space-sm); }
 #dropZone {
+  --wails-drop-target: drop;
   border: 2px dashed var(--color-accent);
   border-radius: var(--radius-md);
   padding: 18px;
@@ -69,6 +70,23 @@ body {
   transition: background 0.15s;
 }
 #dropZone.drag-over { background: var(--color-bg-alt); }
+
+/* --- Load progress bar --- */
+.load-progress {
+  position: relative; height: 22px;
+  background: var(--color-bg-alt); border-radius: var(--radius-sm);
+  overflow: hidden; margin-bottom: var(--space-sm);
+}
+.load-progress.hidden { display: none; }
+.load-progress-bar {
+  height: 100%; width: 0%;
+  background: var(--color-accent); transition: width 0.2s ease;
+}
+.load-progress-text {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--font-size-sm); color: var(--color-text);
+}
 
 /* --- Zone C — file bundle table --- */
 #zone-table { overflow-y: auto; max-height: 280px; }

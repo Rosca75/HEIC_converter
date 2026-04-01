@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,9 +23,46 @@ type FileMeta struct {
 	ThumbBase64 string `json:"thumbBase64"`
 }
 
-// GetFileMeta returns FileMeta for each path. Directories are expanded to their HEIC contents.
-func GetFileMeta(paths []string) ([]FileMeta, error) {
-	var expanded []string
+// GetFileMeta returns FileMeta for each path, processing files in parallel.
+// Directories are expanded to their HEIC contents. onProgress is called after each file.
+func GetFileMeta(paths []string, onProgress func(done, total int)) ([]FileMeta, error) {
+	expanded, err := expandPaths(paths)
+	if err != nil {
+		return nil, err
+	}
+	total := len(expanded)
+	metas := make([]FileMeta, total)
+	errs := make([]error, total)
+	var wg sync.WaitGroup
+	var cnt atomic.Int32
+	sem := make(chan struct{}, 4) // max 4 concurrent ImageMagick processes
+	for i, p := range expanded {
+		wg.Add(1)
+		go func(i int, p string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			m, e := getOneFileMeta(p)
+			metas[i] = m
+			errs[i] = e
+			n := int(cnt.Add(1))
+			if onProgress != nil {
+				onProgress(n, total)
+			}
+		}(i, p)
+	}
+	wg.Wait()
+	for i, e := range errs {
+		if e != nil {
+			return nil, fmt.Errorf("meta for %s: %w", expanded[i], e)
+		}
+	}
+	return metas, nil
+}
+
+// expandPaths resolves any directory paths to the HEIC files they contain.
+func expandPaths(paths []string) ([]string, error) {
+	var out []string
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil {
@@ -34,20 +73,12 @@ func GetFileMeta(paths []string) ([]FileMeta, error) {
 			if err != nil {
 				return nil, err
 			}
-			expanded = append(expanded, heics...)
+			out = append(out, heics...)
 		} else {
-			expanded = append(expanded, p)
+			out = append(out, p)
 		}
 	}
-	metas := make([]FileMeta, 0, len(expanded))
-	for _, p := range expanded {
-		m, err := getOneFileMeta(p)
-		if err != nil {
-			return nil, fmt.Errorf("meta for %s: %w", p, err)
-		}
-		metas = append(metas, m)
-	}
-	return metas, nil
+	return out, nil
 }
 
 // listHEICFiles returns all HEIC/HEIF file paths found in a directory tree.
@@ -65,16 +96,12 @@ func listHEICFiles(dir string) ([]string, error) {
 	return paths, err
 }
 
-// getOneFileMeta extracts metadata for a single HEIC file.
+// getOneFileMeta extracts metadata for a single HEIC file using one identify call.
 func getOneFileMeta(p string) (FileMeta, error) {
 	m := FileMeta{Path: p, Name: filepath.Base(p)}
-	if w, h, err := parseResolution(p); err == nil {
-		m.Width = w
-		m.Height = h
-	}
-	m.Camera, m.CreatedAt = parseCamera(p)
+	m.Width, m.Height, m.Camera, m.CreatedAt = parseVerboseInfo(p)
 	if m.CreatedAt == "" {
-		if info, err := os.Stat(p); err == nil {
+		if info, e := os.Stat(p); e == nil {
 			m.CreatedAt = info.ModTime().UTC().Format(time.RFC3339)
 		} else {
 			m.CreatedAt = "unknown"
@@ -84,28 +111,18 @@ func getOneFileMeta(p string) (FileMeta, error) {
 	return m, nil
 }
 
-// parseResolution returns width and height of an image via magick identify.
-func parseResolution(p string) (int, int, error) {
-	out, err := exec.Command("magick", "identify", "-format", "%wx%h", p).CombinedOutput()
+// parseVerboseInfo extracts resolution and EXIF info using a single identify -verbose call.
+func parseVerboseInfo(p string) (width, height int, camera, createdAt string) {
+	out, err := exec.Command("magick", "identify", "-verbose", p+"[0]").CombinedOutput()
 	if err != nil {
-		return 0, 0, fmt.Errorf("identify: %w\n%s", err, string(out))
-	}
-	var w, h int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%dx%d", &w, &h); err != nil {
-		return 0, 0, fmt.Errorf("parse resolution %q: %w", string(out), err)
-	}
-	return w, h, nil
-}
-
-// parseCamera extracts EXIF camera model and creation date from a HEIC file.
-func parseCamera(p string) (camera, createdAt string) {
-	out, err := exec.Command("magick", "identify", "-verbose", p).CombinedOutput()
-	if err != nil {
-		return "unknown", ""
+		return 0, 0, "unknown", ""
 	}
 	camera = "unknown"
 	for _, line := range strings.Split(string(out), "\n") {
 		line = strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(line, "Geometry:"); ok {
+			fmt.Sscanf(strings.TrimSpace(after), "%dx%d", &width, &height)
+		}
 		if after, ok := strings.CutPrefix(line, "exif:Model:"); ok {
 			camera = strings.TrimSpace(after)
 		}
@@ -113,15 +130,15 @@ func parseCamera(p string) (camera, createdAt string) {
 			createdAt = strings.TrimSpace(after)
 		}
 	}
-	return camera, createdAt
+	return width, height, camera, createdAt
 }
 
-// generateThumb returns a base64 data URL of a 12×12 JPEG thumbnail.
+// generateThumb returns a base64 data URL of a 48×48 JPEG thumbnail.
 func generateThumb(p string) string {
-	cmd := exec.Command("magick", "convert", p,
-		"-thumbnail", "12x12^",
+	cmd := exec.Command("magick", "convert", p+"[0]",
+		"-thumbnail", "48x48^",
 		"-gravity", "center",
-		"-extent", "12x12",
+		"-extent", "48x48",
 		"jpg:-",
 	)
 	data, err := cmd.Output()

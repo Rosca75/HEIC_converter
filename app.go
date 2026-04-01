@@ -64,8 +64,13 @@ func (a *App) OpenOutputFolderDialog() (string, error) {
 }
 
 // GetFileMeta returns metadata and thumbnails for the given file or folder paths.
+// Emits "meta:progress" events as each file is processed so the UI can show a progress bar.
 func (a *App) GetFileMeta(paths []string) ([]converter.FileMeta, error) {
-	return converter.GetFileMeta(paths)
+	return converter.GetFileMeta(paths, func(done, total int) {
+		runtime.EventsEmit(a.ctx, "meta:progress", map[string]interface{}{
+			"done": done, "total": total,
+		})
+	})
 }
 
 // ConvertFiles converts a specific list of HEIC file paths to the target format.

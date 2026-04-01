@@ -1,9 +1,5 @@
 'use strict';
 
-// --- State ---
-let bundle     = [];  // array of FileMeta objects currently in the table
-let outputPath = '';  // user-selected output directory
-
 window.addEventListener('DOMContentLoaded', async () => {
   // --- DOM refs ---
   const format       = document.getElementById('format');
@@ -19,7 +15,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     try {
       const err = await window.go.main.App.CheckImageMagick();
       if (err) {
-        imStatus.textContent = 'ImageMagick not found — ' + err;
+        imStatus.textContent = 'ImageMagick not found \u2014 ' + err;
         imStatus.className = 'status-badge status-error';
         convertBtn.disabled = true;
       } else {
@@ -35,7 +31,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   // --- Quality slider ---
   quality.addEventListener('input', () => { qualityValue.textContent = quality.value; });
 
-  // --- Hide quality controls for lossless formats ---
+  // --- Hide quality for lossless formats ---
   format.addEventListener('change', () => {
     const show = format.value === 'jpg' || format.value === 'webp';
     qualityLabel.style.display = show ? '' : 'none';
@@ -47,12 +43,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     const paths = await window.go.main.App.OpenFileDialog();
     if (paths && paths.length) addFilesToBundle(paths);
   });
-
   document.getElementById('btnPickFolder').addEventListener('click', async () => {
     const dir = await window.go.main.App.OpenFolderDialog();
     if (dir) addFilesToBundle([dir]);
   });
-
   document.getElementById('btnPickOutput').addEventListener('click', async () => {
     const dir = await window.go.main.App.OpenOutputFolderDialog();
     if (dir) {
@@ -61,7 +55,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  // --- Drag-and-drop zone ---
+  // --- Drop zone — visual feedback via HTML5 drag events ---
   const dropZone = document.getElementById('dropZone');
   dropZone.addEventListener('dragover', e => {
     e.preventDefault();
@@ -71,11 +65,16 @@ window.addEventListener('DOMContentLoaded', async () => {
   dropZone.addEventListener('drop', e => {
     e.preventDefault();
     dropZone.classList.remove('drag-over');
-    const paths = Array.from(e.dataTransfer.files)
-      .map(f => f.path)
-      .filter(p => /\.(heic|heif)$/i.test(p));
-    if (paths.length) addFilesToBundle(paths);
   });
+
+  // --- Wails file drop — provides real OS paths on all platforms ---
+  if (window.runtime?.OnFileDrop) {
+    window.runtime.OnFileDrop((x, y, paths) => {
+      dropZone.classList.remove('drag-over');
+      const heic = paths.filter(p => /\.(heic|heif)$/i.test(p));
+      if (heic.length) addFilesToBundle(heic);
+    }, false);
+  }
 
   // --- Convert button ---
   convertBtn.addEventListener('click', async () => {
@@ -88,12 +87,10 @@ window.addEventListener('DOMContentLoaded', async () => {
     convertBtn.disabled = true;
     status.textContent = 'Converting...';
     try {
-      const paths  = bundle.map(b => b.path);
       const result = await window.go.main.App.ConvertFiles(
-        paths, outputPath, format.value, Number(quality.value)
+        bundle.map(b => b.path), outputPath, format.value, Number(quality.value)
       );
-      const n = result.converted?.length ?? 0;
-      status.textContent = `Done. Converted ${n} file(s).`;
+      status.textContent = `Done. Converted ${result.converted?.length ?? 0} file(s).`;
     } catch (err) {
       status.textContent = `Conversion failed: ${err}`;
     } finally {
@@ -101,43 +98,3 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
   });
 });
-
-// addFilesToBundle fetches metadata for paths and merges new entries into the bundle.
-async function addFilesToBundle(paths) {
-  const metas = await window.go.main.App.GetFileMeta(paths);
-  metas.forEach(m => {
-    if (!bundle.find(b => b.path === m.path)) bundle.push(m);
-  });
-  renderTable();
-}
-
-// renderTable rebuilds the file bundle table from the current bundle state.
-function renderTable() {
-  const tbody = document.getElementById('fileTableBody');
-  if (!bundle.length) {
-    tbody.innerHTML = '<tr id="emptyRow"><td colspan="7" class="empty-msg">No files selected.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = '';
-  bundle.forEach((item, idx) => {
-    const tr = document.createElement('tr');
-    const thumb = item.thumbBase64
-      ? `<img src="${item.thumbBase64}" width="12" height="12" class="thumb-img">`
-      : '';
-    tr.innerHTML =
-      `<td>${thumb}</td>` +
-      `<td>${item.name}</td>` +
-      `<td class="path-cell" title="${item.path}">${item.path}</td>` +
-      `<td>${item.width}\u00d7${item.height}</td>` +
-      `<td>${item.createdAt}</td>` +
-      `<td>${item.camera}</td>` +
-      `<td><button class="btn-remove" data-idx="${idx}">\u2715</button></td>`;
-    tbody.appendChild(tr);
-  });
-  document.querySelectorAll('.btn-remove').forEach(btn => {
-    btn.addEventListener('click', () => {
-      bundle.splice(Number(btn.dataset.idx), 1);
-      renderTable();
-    });
-  });
-}
