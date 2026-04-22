@@ -1,14 +1,13 @@
 package main
 
 // JS↔Go API surface:
-// window.go.main.App.CheckImageMagick()             → string
-// window.go.main.App.OpenFileDialog()               → []string
-// window.go.main.App.OpenFolderDialog()             → string
-// window.go.main.App.OpenOutputFolderDialog()       → string
-// window.go.main.App.GetFileMeta(paths)             → []FileMeta
-// window.go.main.App.GetFileMetaStreaming(paths)    → error (emits meta:start/meta:file/meta:done)
-// window.go.main.App.ConvertFiles(paths,…)          → ConversionSummary
-// window.go.main.App.Convert(inputPath,…)           → ConversionSummary (legacy)
+// window.go.main.App.OpenFileDialog()                    → []string
+// window.go.main.App.OpenFolderDialog()                  → string
+// window.go.main.App.OpenOutputFolderDialog()            → string
+// window.go.main.App.GetFileMeta(paths, recursive)       → []FileMeta
+// window.go.main.App.GetFileMetaStreaming(paths, r)      → error (emits meta:start/meta:file/meta:done)
+// window.go.main.App.ConvertFiles(paths, out, fmt, q)    → ConversionSummary
+//                                                          (emits convert:start/convert:file/convert:done)
 
 import (
 	"context"
@@ -31,14 +30,6 @@ func NewApp() *App {
 // startup stores the Wails context needed for dialog calls.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-}
-
-// CheckImageMagick verifies ImageMagick is available on PATH.
-func (a *App) CheckImageMagick() string {
-	if err := converter.CheckImageMagick(); err != nil {
-		return err.Error()
-	}
-	return ""
 }
 
 // OpenFileDialog opens a native multi-file picker filtered to HEIC/HEIF.
@@ -65,30 +56,46 @@ func (a *App) OpenOutputFolderDialog() (string, error) {
 	})
 }
 
-// GetFileMeta returns metadata and thumbnails for the given file or folder paths.
-// Emits "meta:progress" events as each file is processed so the UI can show a progress bar.
-func (a *App) GetFileMeta(paths []string) ([]converter.FileMeta, error) {
-	return converter.GetFileMeta(paths, func(done, total int) {
+// GetFileMeta returns metadata and thumbnails for the given files or
+// directories. If recursive is true, directories are walked into subfolders.
+func (a *App) GetFileMeta(paths []string, recursive bool) ([]converter.FileMeta, error) {
+	return converter.GetFileMeta(paths, recursive, func(done, total int) {
 		runtime.EventsEmit(a.ctx, "meta:progress", map[string]interface{}{
 			"done": done, "total": total,
 		})
 	})
 }
 
-// ConvertFiles converts a specific list of HEIC file paths to the target format.
+// ConvertFiles converts the given HEIC files to the target format in
+// parallel. Emits convert:start with the total count, one convert:file
+// event per file with {path, ok, done, total}, then convert:done with the
+// summary.
 func (a *App) ConvertFiles(paths []string, outputDir, format string, quality int) (converter.ConversionSummary, error) {
-	return converter.ConvertFiles(paths, outputDir, format, quality)
+	runtime.EventsEmit(a.ctx, "convert:start", len(paths))
+	summary, err := converter.ConvertFiles(paths, outputDir, format, quality,
+		func(done, total int, currentPath string, ok bool) {
+			runtime.EventsEmit(a.ctx, "convert:file", map[string]interface{}{
+				"path":  currentPath,
+				"ok":    ok,
+				"done":  done,
+				"total": total,
+			})
+		})
+	runtime.EventsEmit(a.ctx, "convert:done", summary)
+	return summary, err
 }
 
-// Convert is the legacy single-path/folder conversion method.
+// Convert is the legacy single-path/folder conversion method, kept so the
+// JS binding surface does not break for any in-flight callers.
 func (a *App) Convert(inputPath, outputDir, format string, quality int) (converter.ConversionSummary, error) {
 	return converter.ConvertPath(inputPath, outputDir, format, quality)
 }
 
-// GetFileMetaStreaming expands paths and emits meta:start, one meta:file per file,
-// then meta:done — allowing the UI to render rows as they arrive.
-func (a *App) GetFileMetaStreaming(paths []string) error {
-	expanded, err := converter.ExpandPaths(paths)
+// GetFileMetaStreaming emits meta:start with the total count, one meta:file
+// event per file as soon as it is ready, then meta:done. If recursive is
+// true, directories are walked into subfolders.
+func (a *App) GetFileMetaStreaming(paths []string, recursive bool) error {
+	expanded, err := converter.ExpandPaths(paths, recursive)
 	if err != nil {
 		return err
 	}

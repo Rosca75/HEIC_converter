@@ -1,6 +1,46 @@
+# Binary outputs
+heic-converter
+heic-converter.exe
+heic-converter-linux
+build/bin/
+
+# Wails build scaffolding
+build/
+frontend/dist/
+frontend/node_modules/
+
+# Go build artifacts
+*.o
+*.a
+*.so
+*.test
+*.out
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
 .DS_Store
+Thumbs.db
+Desktop.ini
+
+# Test coverage
+coverage.out
+coverage.html
+*.coverprofile
+
+# Vendor directory
+vendor/
+
+# Sample HEICs used in local tests — too large to ship in-repo
+samples/
+converter/testdata/*.heic
+converter/testdata/*.HEIC
+
+# Misc
 *.log
 *.tmp
-*.exe
-frontend/dist
-frontend/node_modules

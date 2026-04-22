@@ -1,6 +1,15 @@
+// converter/meta.go — metadata extraction for the file-bundle table.
+//
+// Single-I/O strategy: read 192 KB, then pull dimensions from bep/imagemeta's
+// CONFIG pass, decode the embedded thumbnail from the same buffer via
+// Rosca75/heic, and extract EXIF from the same buffer via bep/imagemeta's
+// tag callback. Files that do not yield to this path fall back to a full
+// file read.
 package converter
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,9 +17,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/bep/imagemeta"
 )
 
-// FileMeta holds display metadata and a thumbnail for one HEIC file.
+// FileMeta holds display metadata and a base64 JPEG thumbnail for one HEIC
+// file. JSON tags are in camelCase because the frontend reads them directly.
 type FileMeta struct {
 	Path        string `json:"path"`
 	Name        string `json:"name"`
@@ -21,10 +33,10 @@ type FileMeta struct {
 	ThumbBase64 string `json:"thumbBase64"`
 }
 
-// GetFileMeta returns FileMeta for each path, processing files in parallel.
-// Directories are expanded to their HEIC contents. onProgress is called after each file.
-func GetFileMeta(paths []string, onProgress func(done, total int)) ([]FileMeta, error) {
-	expanded, err := expandPaths(paths)
+// GetFileMeta extracts metadata for the given paths in parallel. Directory
+// paths are expanded via expandPaths. onProgress fires after every file.
+func GetFileMeta(paths []string, recursive bool, onProgress func(done, total int)) ([]FileMeta, error) {
+	expanded, err := expandPaths(paths, recursive)
 	if err != nil {
 		return nil, err
 	}
@@ -33,6 +45,8 @@ func GetFileMeta(paths []string, onProgress func(done, total int)) ([]FileMeta, 
 	errs := make([]error, total)
 	var wg sync.WaitGroup
 	var cnt atomic.Int32
+	// Cap workers at 16 — beyond that we saturate disk I/O on most SSDs
+	// and start losing to scheduler overhead.
 	workers := runtime.NumCPU()
 	if workers > 16 {
 		workers = 16
@@ -62,75 +76,35 @@ func GetFileMeta(paths []string, onProgress func(done, total int)) ([]FileMeta, 
 	return metas, nil
 }
 
-// ExpandPaths resolves directory paths to their contained HEIC files (exported for app.go).
-func ExpandPaths(paths []string) ([]string, error) {
-	return expandPaths(paths)
-}
-
-// expandPaths resolves any directory paths to the HEIC files they contain.
-func expandPaths(paths []string) ([]string, error) {
-	var out []string
-	for _, p := range paths {
-		info, err := os.Stat(p)
-		if err != nil {
-			return nil, fmt.Errorf("stat %s: %w", p, err)
-		}
-		if info.IsDir() {
-			heics, err := listHEICFiles(p)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, heics...)
-		} else {
-			out = append(out, p)
-		}
-	}
-	return out, nil
-}
-
-// listHEICFiles returns all HEIC/HEIF file paths found in a directory tree.
-func listHEICFiles(dir string) ([]string, error) {
-	var paths []string
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() && isHEIC(path) {
-			paths = append(paths, path)
-		}
-		return nil
-	})
-	return paths, err
-}
-
-// GetOneFileMeta extracts metadata for a single HEIC file (exported for streaming use).
+// GetOneFileMeta is the streaming-path entry point used by app.go.
 func GetOneFileMeta(p string) (FileMeta, error) {
 	return getOneFileMeta(p)
 }
 
-// getOneFileMeta tries the fast pure-Go path first, falling back to ImageMagick.
+// getOneFileMeta extracts metadata for one HEIC file. Uses the 192 KB
+// fast-path for dimensions, thumbnail, and EXIF; falls back to filesystem
+// mtime for CreatedAt if EXIF has no DateTimeOriginal.
 func getOneFileMeta(p string) (FileMeta, error) {
-	m := FileMeta{Path: p, Name: filepath.Base(p)}
+	m := FileMeta{Path: p, Name: filepath.Base(p), Camera: "unknown"}
 
-	w, h, cam, date, thumb, err := extractMetaFast(p)
-	if err == nil && w > 0 {
-		m.Width, m.Height, m.Camera, m.CreatedAt = w, h, cam, date
-		m.ThumbBase64 = thumb
-		if m.ThumbBase64 == "" {
-			m.ThumbBase64 = generateThumb(p)
+	header, hdrErr := readHEICHeader(p)
+	if hdrErr == nil {
+		if res, metaErr := imagemeta.Decode(imagemeta.Options{
+			R:           bytes.NewReader(header),
+			ImageFormat: imagemeta.HEIF,
+			Sources:     imagemeta.CONFIG,
+		}); metaErr == nil && res.ImageConfig.Width > 0 {
+			m.Width, m.Height = res.ImageConfig.Width, res.ImageConfig.Height
 		}
-		if m.CreatedAt == "" {
-			if info, e := os.Stat(p); e == nil {
-				m.CreatedAt = info.ModTime().UTC().Format(time.RFC3339)
-			} else {
-				m.CreatedAt = "unknown"
-			}
-		}
-		return m, nil
+		extractExifInto(bytes.NewReader(header), &m)
 	}
 
-	// Full ImageMagick fallback for non-standard HEIC files.
-	m.Width, m.Height, m.Camera, m.CreatedAt = parseVerboseInfo(p)
+	if img, thumbErr := decodeHEICThumbnail(p); thumbErr == nil {
+		if jpg := resizeImageToJPEG(img, 48, 80); jpg != nil {
+			m.ThumbBase64 = "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpg)
+		}
+	}
+
 	if m.CreatedAt == "" {
 		if info, e := os.Stat(p); e == nil {
 			m.CreatedAt = info.ModTime().UTC().Format(time.RFC3339)
@@ -138,6 +112,5 @@ func getOneFileMeta(p string) (FileMeta, error) {
 			m.CreatedAt = "unknown"
 		}
 	}
-	m.ThumbBase64 = generateThumb(p)
 	return m, nil
 }
