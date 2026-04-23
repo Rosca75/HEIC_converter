@@ -1,125 +1,102 @@
+// converter/converter.go — conversion orchestration.
+//
+// Parallel worker pool decodes each HEIC once via Rosca75/heic (WASM or
+// dynamic libheif), then dispatches to encode.go for the chosen output
+// format. No subprocesses are forked; no temp files are written.
 package converter
 
 import (
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"strings"
+	"runtime"
+	"sync"
+	"sync/atomic"
 )
 
+// FileResult records one successful conversion.
 type FileResult struct {
 	Input  string `json:"input"`
 	Output string `json:"output"`
 }
 
+// ConversionSummary is returned to the frontend after ConvertFiles finishes.
 type ConversionSummary struct {
 	Converted []FileResult `json:"converted"`
 	Skipped   []string     `json:"skipped"`
+	Failed    []string     `json:"failed"`
 }
 
-func ConvertPath(inputPath, outputDir, format string, quality int) (ConversionSummary, error) {
-	if quality < 1 || quality > 100 {
-		return ConversionSummary{}, fmt.Errorf("quality must be between 1 and 100")
-	}
+// ProgressFn is invoked after each file finishes (successfully or not).
+// done is the running count, total is the number of files being processed.
+type ProgressFn func(done, total int, currentPath string, ok bool)
 
-	info, err := os.Stat(inputPath)
+// ConvertFiles converts paths to the target format in parallel and returns
+// a summary. The quality argument is clamped to 1..100.
+func ConvertFiles(paths []string, outputDir, format string, quality int, progress ProgressFn) (ConversionSummary, error) {
+	if quality < 1 {
+		quality = 1
+	}
+	if quality > 100 {
+		quality = 100
+	}
+	encode, ext, err := encoderFor(format)
 	if err != nil {
-		return ConversionSummary{}, fmt.Errorf("cannot access input path: %w", err)
+		return ConversionSummary{}, err
 	}
-
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return ConversionSummary{}, fmt.Errorf("cannot create output directory: %w", err)
 	}
 
+	total := len(paths)
+	results := make([]FileResult, total)
+	statuses := make([]int, total) // 0 = failed, 1 = converted, 2 = skipped
+
+	workers := runtime.NumCPU()
+	if workers > 16 {
+		workers = 16
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	var cnt atomic.Int32
+
+	for i, p := range paths {
+		wg.Add(1)
+		go func(i int, p string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			if !isHEIC(p) {
+				statuses[i] = 2
+				n := int(cnt.Add(1))
+				if progress != nil {
+					progress(n, total, p, false)
+				}
+				return
+			}
+			out, cerr := convertOne(p, outputDir, ext, quality, encode)
+			if cerr == nil {
+				results[i] = FileResult{Input: p, Output: out}
+				statuses[i] = 1
+			}
+			n := int(cnt.Add(1))
+			if progress != nil {
+				progress(n, total, p, cerr == nil)
+			}
+		}(i, p)
+	}
+	wg.Wait()
+
 	summary := ConversionSummary{}
-	if !info.IsDir() {
-		out, convErr := convertOne(inputPath, outputDir, format, quality)
-		if convErr != nil {
-			return ConversionSummary{}, convErr
+	for i, s := range statuses {
+		switch s {
+		case 1:
+			summary.Converted = append(summary.Converted, results[i])
+		case 2:
+			summary.Skipped = append(summary.Skipped, paths[i])
+		default:
+			summary.Failed = append(summary.Failed, paths[i])
 		}
-		summary.Converted = append(summary.Converted, FileResult{Input: inputPath, Output: out})
-		return summary, nil
-	}
-
-	walkErr := filepath.WalkDir(inputPath, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !isHEIC(path) {
-			summary.Skipped = append(summary.Skipped, path)
-			return nil
-		}
-
-		out, err := convertOne(path, outputDir, format, quality)
-		if err != nil {
-			return err
-		}
-		summary.Converted = append(summary.Converted, FileResult{Input: path, Output: out})
-		return nil
-	})
-	if walkErr != nil {
-		return ConversionSummary{}, walkErr
-	}
-
-	if len(summary.Converted) == 0 {
-		return ConversionSummary{}, errors.New("no HEIC/HEIF files found in the selected directory")
-	}
-
-	return summary, nil
-}
-
-func convertOne(inputPath, outputDir, format string, quality int) (string, error) {
-	if !isHEIC(inputPath) {
-		return "", fmt.Errorf("unsupported file extension for %s (expected .heic or .heif)", inputPath)
-	}
-
-	ext := format
-	if ext == "jpeg" {
-		ext = "jpg"
-	}
-
-	baseName := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
-	outputPath := filepath.Join(outputDir, baseName+"."+ext)
-
-	cmd := exec.Command("magick", "convert", inputPath, "-quality", fmt.Sprintf("%d", quality), outputPath)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("ImageMagick error: %w\n%s", err, string(output))
-	}
-
-	return outputPath, nil
-}
-
-func isHEIC(path string) bool {
-	ext := strings.ToLower(filepath.Ext(path))
-	return ext == ".heic" || ext == ".heif"
-}
-
-// ConvertFiles converts a list of individual HEIC file paths to the target format.
-func ConvertFiles(paths []string, outputDir, format string, quality int) (ConversionSummary, error) {
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return ConversionSummary{}, fmt.Errorf("cannot create output directory: %w", err)
-	}
-	summary := ConversionSummary{}
-	for _, p := range paths {
-		out, err := convertOne(p, outputDir, format, quality)
-		if err != nil {
-			return ConversionSummary{}, fmt.Errorf("error converting %s: %w", p, err)
-		}
-		summary.Converted = append(summary.Converted, FileResult{Input: p, Output: out})
 	}
 	return summary, nil
-}
-
-func CheckImageMagick() error {
-	cmd := exec.Command("magick", "--version")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ImageMagick is not installed or not in PATH.\nDownload: https://imagemagick.org/script/download.php#windows")
-	}
-	return nil
 }

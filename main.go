@@ -12,6 +12,8 @@ import (
 var assets embed.FS
 
 func main() {
+	initHEIC()
+
 	app := NewApp()
 
 	err := wails.Run(&options.App{

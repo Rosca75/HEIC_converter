@@ -5,66 +5,91 @@
 ## 1. Overall context
 
 HEIC Converter is a **desktop application** built with **Wails v2** (Go backend + plain
-HTML/JS/CSS frontend). It allows users to select HEIC/HEIF photo files, inspect their
-metadata, and batch-convert them to JPG, PNG, WebP, or TIFF via ImageMagick.
+HTML/JS/CSS frontend). It lets users select HEIC/HEIF photo files, inspect their
+metadata, and batch-convert them to JPG, PNG, TIFF, or WebP using a **pure-Go
+pipeline** — no external binaries, no ImageMagick, no CGo dependencies for image work.
 
-- Runtime: Go 1.22+, Wails v2.12, ImageMagick (`magick` CLI) must be on PATH.
-- No Node.js build step. Frontend files are served directly from `static/` by Wails.
+- Runtime: Go 1.25+, Wails v2.12.
+- HEIC decoding: `github.com/Rosca75/heic` — loads dynamic `libheif` via
+  `purego` if present, otherwise falls back to a bundled WASM decoder run
+  under `wazero`. Works on a vanilla Windows machine with no install.
+- EXIF: `github.com/bep/imagemeta` (handles HEIF natively, ~2.6× faster
+  than `rwcarlsen/goexif` with ~40× fewer allocations).
+- Encoders: stdlib `image/jpeg`, `image/png`; `golang.org/x/image/tiff`;
+  `github.com/gen2brain/webp`.
+- No Node.js build step. Frontend files are served directly from `static/`.
 - Target OS: Windows (primary), macOS and Linux supported by Wails.
-- The Wails runtime JS is injected automatically at `/wails/runtime.js` — never add it
-  manually.
+- The Wails runtime JS is injected automatically at `/wails/runtime.js` —
+  never add it manually.
 - Go backend methods are exposed to JS via `window.go.main.App.<Method>(args)`.
-  All calls are async and return Promises.
+  All calls are async Promises.
 
 ---
 
-## 2. Overall project folder structure
-
-### 2.1 Project and folder structure — target architecture
+## 2. Project folder structure
 
 ```
 heic-converter/
 ├── CLAUDE.md                  ← this file (project rules)
-├── FRONTEND-IMPROVEMENT.md    ← pending UI feature spec
+├── README.md                  ← user-facing docs
 ├── main.go                    ← Wails entry point, window config
 ├── app.go                     ← Go↔JS bridge: all bound methods
+├── heic_init.go               ← initHEIC() wrapper, called once from main
+├── heic_version_linux.go      ← purego libheif version probe (Linux)
+├── heic_version_darwin.go     ← purego libheif version probe (macOS)
+├── heic_version_other.go      ← stub for Windows/BSD (no probe)
 ├── wails.json                 ← Wails project config
 ├── go.mod / go.sum
 ├── converter/
-│   ├── converter.go           ← ConvertPath(), ConvertFiles(), convertOne()
-│   ├── meta.go                ← GetFileMeta(), thumbnail generation
-│   ├── exif.go                ← EXIF helpers (currently stub)
-│   └── quality.go             ← RecommendedQuality()
-└── static/
-    ├── index.html             ← UI shell (structure only, no inline styles/scripts)
-    ├── app.js                 ← All frontend logic (vanilla JS, no framework)
-    └── styles.css             ← All styles (CSS custom properties + layout)
+│   ├── converter.go           ← ConvertFiles(): parallel worker pool
+│   ├── convert_one.go         ← convertOne(), ConvertPath(), isHEIC()
+│   ├── encode.go              ← JPG/PNG/TIFF/WebP encoder dispatch
+│   ├── meta.go                ← GetFileMeta(), getOneFileMeta()
+│   ├── thumb.go               ← readHEICHeader (192 KB), decodeHEICThumbnail, resize
+│   ├── exif.go                ← extractExifInto via bep/imagemeta
+│   ├── walk.go                ← expandPaths, listHEICFiles (recursive flag)
+│   ├── quality.go             ← RecommendedQuality()
+│   └── converter_test.go
+├── static/
+│   ├── index.html             ← UI shell (structure only)
+│   ├── app.js                 ← init + dialogs + convert trigger
+│   ├── table.js               ← bundle state, streaming progress, table render
+│   └── styles.css             ← design tokens + layout
+└── .github/workflows/
+    ├── ci.yml                 ← go vet + gofmt + go test on push/PR to main
+    └── release.yml            ← Windows + Linux binaries on v* tag push
 ```
 
-New Go functionality must go into the `converter/` package, not into `app.go`.
-`app.go` is only a thin bridge: it calls `converter/` functions and returns results.
+New Go functionality goes into the `converter/` package, not `app.go`.
+`app.go` is only a thin bridge: it calls `converter/` functions and emits
+Wails events for the UI.
 
-### 2.2 Refactoring rules
+### 2.1 Refactoring rules
 
-- **Never move or rename** `main.go`, `app.go`, `wails.json`, or the `static/` folder.
+- **Never move or rename** `main.go`, `app.go`, `wails.json`, or `static/`.
   Wails depends on these paths.
-- When adding a new feature area (e.g. metadata, presets), create a **new file** inside
-  `converter/` rather than appending to an existing file.
-- If any file exceeds 150 lines, split it. Name the new file after its dominant
-  responsibility (e.g. `converter/thumb.go` for thumbnail logic).
-- Do not introduce sub-packages inside `converter/`. Keep everything in `package converter`.
-- Frontend: split `app.js` into logical sections with clear section-header comments if it
-  grows beyond 150 lines. Do not introduce module bundling or `import` statements — the
-  files are served as plain scripts.
+- When adding a new feature area, create a **new file** in `converter/`
+  rather than appending to an existing file.
+- If any file exceeds 150 lines, split it. Name the new file after its
+  dominant responsibility (e.g. `converter/walk.go`, `converter/encode.go`).
+- Do not introduce sub-packages inside `converter/`. Keep everything in
+  `package converter`.
+- Frontend: split `app.js` / `table.js` further if they grow past 150 lines.
+  Do not introduce module bundling or `import` statements — files are served
+  as plain scripts.
 
-### 2.3 Important notes
+### 2.2 Important notes
 
-- ImageMagick is invoked via `exec.Command("magick", ...)`. Always capture both stdout and
-  stderr with `CombinedOutput()` and include the output in any returned error.
-- Never hardcode paths. Use `filepath.Join` for all path construction in Go.
-- Always call `os.MkdirAll(outputDir, 0o755)` before writing any output file.
-- Wails dialog functions (`runtime.OpenMultipleFilesDialog`, etc.) require `a.ctx` — make
-  sure `startup()` has been called before any dialog method is invoked.
+- **No subprocess forking.** Never call `exec.Command("magick", ...)` or any
+  other CLI tool. All image work goes through the Go libraries listed above.
+- **No temp files.** `convertOne` decodes in memory and streams directly to
+  the output file via an `encode(io.Writer, image.Image, int) error` func.
+- Always call `os.MkdirAll(outputDir, 0o755)` before writing output files.
+- Use `filepath.Join` for all path construction. Never hardcode separators.
+- Wails dialog functions (`runtime.OpenMultipleFilesDialog`, etc.) require
+  `a.ctx` — `startup()` stores it and must have fired first.
+- `initHEIC()` is called once at the very top of `main()` to select between
+  dynamic libheif and the bundled WASM decoder. Do not re-initialise later.
 
 ---
 
@@ -72,140 +97,131 @@ New Go functionality must go into the `converter/` package, not into `app.go`.
 
 ### 3.1 Layout specification
 
-The UI is a **single-panel layout** inside a centred card. Zones are stacked vertically:
+Single-panel layout inside a centred card. Zones stacked vertically:
 
 ```
 ┌─────────────────────────────────────────────────┐
 │  ZONE A — Header                                │
-│  Title + subtitle + ImageMagick status badge    │
+│  Title + subtitle                               │
 ├─────────────────────────────────────────────────┤
 │  ZONE B — Input selection                       │
 │  [Select files]  [Select folder]                │
+│  ☐ Include subfolders                           │
 │  Drop zone (dashed border)                      │
 ├─────────────────────────────────────────────────┤
 │  ZONE C — File bundle table                     │
+│  Load-progress bar (while streaming)            │
 │  thumb | name | path | resolution | date | cam  │
-│  (scrollable, max-height capped)                │
 ├─────────────────────────────────────────────────┤
 │  ZONE D — Output & conversion options           │
 │  [Select output folder]  output path display    │
-│  Format selector   Quality slider               │
+│  Format selector   Quality slider (0–100)       │
+│  Format-specific hint under the slider          │
 ├─────────────────────────────────────────────────┤
 │  ZONE E — Action & status                       │
 │  [Convert] button                               │
+│  Convert-progress bar (during conversion)       │
 │  Status / result pre block                      │
 └─────────────────────────────────────────────────┘
 ```
 
-### 3.2 Zones description and associated rules
+### 3.2 Zones and rules
 
-| Zone | ID in HTML      | Rules |
+| Zone | ID              | Rules |
 |------|-----------------|-------|
 | A    | `#zone-header`  | Read-only. Never put interactive controls here. |
-| B    | `#zone-input`   | Buttons call Go dialogs. Drop zone is child of this zone. |
-| C    | `#zone-table`   | `overflow-y: auto`, `max-height: 280px`. Empty state shows placeholder text. |
-| D    | `#zone-options` | Output folder picker + format/quality controls. |
-| E    | `#zone-action`  | Single Convert button + `<pre id="status">` result area. |
+| B    | `#zone-input`   | Buttons call Go dialogs. "Include subfolders" checkbox belongs here. Drop zone is a child. |
+| C    | `#zone-table`   | `overflow-y: auto`, `max-height: 280px`. Shared `.progress` bar lives here for file listing. |
+| D    | `#zone-options` | Output folder picker + format/quality controls + `#qualityHint`. |
+| E    | `#zone-action`  | Convert button, `.progress` bar for conversion, `<pre id="status">`. |
 
-- Each zone must have its zone ID as the wrapper `<section>` element's `id`.
+- Each zone's wrapper `<section>` uses its zone ID as the element `id`.
 - Do not nest zones inside each other.
-- All button click handlers live in `app.js`. No `onclick=""` attributes in HTML.
+- All button click handlers live in `app.js`. **No `onclick=""` attributes
+  in HTML.**
+- The progress bar component (`.progress` / `.progress-bar` / `.progress-text`)
+  is shared by load and convert flows — see `showProgress()` in `table.js`.
 
 ### 3.3 CSS layout approach
 
-- The outer `.app` uses `display: grid; place-items: center` to centre the card.
-- The `.panel` card uses `display: flex; flex-direction: column; gap: var(--space-md)`.
+- Outer `.app` uses `display: grid; place-items: center` to centre the card.
+- `.panel` uses `display: flex; flex-direction: column; gap: var(--space-md)`.
 - Zones are direct `<section>` children of `.panel`.
-- Use CSS custom properties for all spacing (see §3.4). Never use magic pixel values
-  directly in layout rules.
-- Do **not** use CSS Grid inside zones unless a zone explicitly needs two-column layout
-  (e.g. Zone D options row). Use flexbox first.
-- The drop zone (`#dropZone`) uses `border: 2px dashed var(--color-accent)` and transitions
-  background on `.drag-over` class toggle.
-- The file table (`#fileTable`) uses `border-collapse: collapse`. Rows alternate with
-  `--color-row-alt` background. Long path cells use `text-overflow: ellipsis`.
+- Use CSS custom properties for all spacing. Never hardcode magic pixel
+  values in layout rules.
+- Do not use CSS Grid inside zones unless the zone explicitly needs a
+  two-column layout. Use flexbox first.
 
-### 3.4 Design token approach
+### 3.4 Design tokens
 
-All visual values must be defined as CSS custom properties on `:root`. Never hardcode
-colours, radii, or spacing values in rule bodies.
-
-```css
-:root {
-  /* Colour palette */
-  --color-bg:        #f5f7ff;
-  --color-bg-alt:    #eef1ff;
-  --color-surface:   #ffffff;
-  --color-border:    #d6def5;
-  --color-accent:    #3c67ff;
-  --color-accent-dim:#a9b8ef;
-  --color-text:      #1a1f36;
-  --color-text-muted:#4b587c;
-  --color-danger:    #c0392b;
-  --color-ok:        #1d7a3a;
-  --color-row-alt:   #f9faff;
-
-  /* Typography */
-  --font-mono: "JetBrains Mono", "Fira Mono", "Consolas", monospace;
-  --font-size-base: 0.9rem;
-  --font-size-sm:   0.82rem;
-  --font-size-lg:   1.6rem;
-
-  /* Spacing scale */
-  --space-xs:  4px;
-  --space-sm:  8px;
-  --space-md:  14px;
-  --space-lg:  24px;
-
-  /* Shape */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-}
-```
-
-When adding new visual properties, always add a token to `:root` first, then reference it.
+All visual values live on `:root` as CSS custom properties (colour, font,
+spacing, radius). When adding new visual properties, add a token to `:root`
+first, then reference it. Never hardcode colours, radii, or spacing values
+in rule bodies.
 
 ---
 
 ## 4. Backend architecture
 
-### 4.1 Go files
+### 4.1 Go files (responsibility map)
 
-| File                    | Responsibility |
-|-------------------------|----------------|
-| `main.go`               | Wails `Run()` config only. Window size, asset binding. |
-| `app.go`                | All methods bound to JS. Thin wrappers — no business logic. |
-| `converter/converter.go`| `ConvertPath()`, `ConvertFiles()`, `convertOne()`, `isHEIC()`, `CheckImageMagick()` |
-| `converter/meta.go`     | `GetFileMeta()`, `generateThumb()`, `parseResolution()`, `parseCamera()` |
-| `converter/exif.go`     | EXIF helpers if/when expanded beyond ImageMagick identify. |
-| `converter/quality.go`  | `RecommendedQuality()` |
+| File                          | Responsibility |
+|-------------------------------|----------------|
+| `main.go`                     | Wails `Run()` config. Calls `initHEIC()` before opening the window. |
+| `app.go`                      | All methods bound to JS. Thin wrappers + event emission. |
+| `heic_init.go`                | `initHEIC()`: picks dynamic libheif vs. WASM. |
+| `heic_version_*.go`           | Platform-specific libheif version probe via `purego`. |
+| `converter/converter.go`      | `ConvertFiles()` — parallel worker pool; summary aggregation. |
+| `converter/convert_one.go`    | `convertOne()`, `ConvertPath()`, `isHEIC()`. |
+| `converter/encode.go`         | `encoderFor()` + `encodeJPEG/PNG/TIFF/WebP`. |
+| `converter/meta.go`           | `GetFileMeta()`, `getOneFileMeta()`, `FileMeta` struct. |
+| `converter/thumb.go`          | `readHEICHeader()` (192 KB), `decodeHEICThumbnail()`, `resizeImageToJPEG()`. |
+| `converter/exif.go`           | `extractExifInto()` via `bep/imagemeta`. |
+| `converter/walk.go`           | `ExpandPaths()`, `listHEICFiles()` (honours `recursive`). |
+| `converter/quality.go`        | `RecommendedQuality()`. |
 
-**Struct naming:**
-- Result structs live in `converter/` and are tagged with `json:"camelCase"`.
+### 4.2 Struct & error conventions
+
 - Structs exposed to JS: `FileResult`, `ConversionSummary`, `FileMeta`.
-- Never expose unexported structs across the `app.go` / `converter` boundary.
+  JSON tags are in **camelCase** because the frontend reads them directly.
+- Every exported function returns `(T, error)`.
+- Wrap errors with `fmt.Errorf("context: %w", err)`. Never discard the
+  original error.
+- In `app.go`, return the error directly; Wails serialises it as a JS
+  rejected Promise.
 
-**Error handling:**
-- All exported functions return `(T, error)`.
-- Wrap errors with `fmt.Errorf("context: %w", err)` — never discard the original error.
-- In `app.go`, return the error directly; Wails serialises it as a JS rejected Promise.
+### 4.3 JS ↔ Go contract
 
-### 4.2 API endpoints (JS↔Go contract)
+Keep the comment block at the top of `app.go` in sync. Current surface:
 
-Wails does not use HTTP. The full JS↔Go surface is:
+| JS call                                             | Go method                              | Returns               |
+|-----------------------------------------------------|----------------------------------------|-----------------------|
+| `window.go.main.App.OpenFileDialog()`               | `OpenFileDialog()`                     | `[]string`            |
+| `window.go.main.App.OpenFolderDialog()`             | `OpenFolderDialog()`                   | `string`              |
+| `window.go.main.App.OpenOutputFolderDialog()`       | `OpenOutputFolderDialog()`             | `string`              |
+| `window.go.main.App.GetFileMeta(paths, recursive)`  | `GetFileMeta([]string, bool)`          | `[]FileMeta`          |
+| `window.go.main.App.GetFileMetaStreaming(paths, r)` | `GetFileMetaStreaming([]string, bool)` | `error` + events      |
+| `window.go.main.App.ConvertFiles(paths, …)`         | `ConvertFiles([]string, …)`            | `ConversionSummary`   |
+| `window.go.main.App.Convert(inputPath, …)`          | `Convert(string, …)` (legacy)          | `ConversionSummary`   |
 
-| JS call                                       | Go method                    | Returns               |
-|-----------------------------------------------|------------------------------|-----------------------|
-| `window.go.main.App.CheckImageMagick()`       | `CheckImageMagick()`         | `string` (empty = OK) |
-| `window.go.main.App.OpenFileDialog()`         | `OpenFileDialog()`           | `[]string`            |
-| `window.go.main.App.OpenFolderDialog()`       | `OpenFolderDialog()`         | `string`              |
-| `window.go.main.App.OpenOutputFolderDialog()` | `OpenOutputFolderDialog()`   | `string`              |
-| `window.go.main.App.GetFileMeta(paths)`       | `GetFileMeta([]string)`      | `[]FileMeta`          |
-| `window.go.main.App.ConvertFiles(paths,…)`    | `ConvertFiles([]string,…)`   | `ConversionSummary`   |
+Emitted Wails events:
 
-When adding a new bound method, add a row to this table in a comment block at the top of
-`app.go` so the contract stays self-documented.
+- `meta:start` (total int) → `meta:file` (FileMeta) × N → `meta:done`
+- `meta:progress` ({done, total}) — batch `GetFileMeta` only
+- `convert:start` (total int) → `convert:file` ({path, ok, done, total}) × N → `convert:done` (summary)
+
+### 4.4 Parallelism & performance
+
+- Both `GetFileMeta` and `ConvertFiles` use a goroutine worker pool sized to
+  `runtime.NumCPU()`, capped at 16. Beyond 16 workers we saturate disk I/O
+  on typical SSDs and start losing to scheduler overhead.
+- Metadata extraction reads a **192 KB header** via `readHEICHeader()`; the
+  `Rosca75/heic` decoder walks the `iloc` box inside that buffer and
+  extracts the embedded thumbnail without a full-file read. EXIF comes from
+  the same buffer via `bep/imagemeta`. Fallback to full-file read is
+  automatic in `decodeHEICThumbnail()` if the header-only path fails.
+- Conversion decodes once in memory and encodes directly to the output
+  file — no temp files, no subprocesses.
 
 ---
 
@@ -213,78 +229,82 @@ When adding a new bound method, add a row to this table in a comment block at th
 
 ### 5.1 File length — 150-line maximum
 
-No source file (Go or JS or CSS) may exceed **150 lines**. This limit exists for token
-efficiency when Claude Code reads files into context.
+No source file (Go or JS or CSS) may exceed **150 lines**. If an edit would
+push a file past 150 lines, split it first.
 
-- If an edit would push a file past 150 lines, split it first, then make the edit.
-- HTML is exempt (structural markup is verbose) but should stay under 120 lines.
+- HTML is exempt (structural markup is verbose) but should stay under 120
+  lines.
 - Comments and blank lines count toward the limit.
 
 ### 5.2 Typography — monospace everywhere
 
-The entire UI uses the monospace font stack defined in `--font-mono`. Apply it globally:
-
-```css
-body {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-base);
-}
-```
-
-This gives the app a consistent, technical aesthetic. Headings use the same stack at a
-larger size (`--font-size-lg`). Do not introduce any sans-serif or serif font.
+The entire UI uses the monospace font stack defined in `--font-mono`.
+Headings use the same stack at a larger size (`--font-size-lg`). Do not
+introduce any sans-serif or serif font.
 
 ### 5.3 Documentation — every function gets a comment
 
-Every Go function and every JS function must have a one-line comment immediately above it
-describing **what it does** (not how).
+Every Go function and every JS function has a one-line comment immediately
+above it describing **what it does** (not how). CSS zone blocks carry a
+label comment (`/* Zone C — file bundle table */`).
 
-Go:
-```go
-// convertOne converts a single HEIC file to the target format using ImageMagick.
-func convertOne(inputPath, outputDir, format string, quality int) (string, error) {
-```
-
-JS:
-```js
-// renderTable rebuilds the file bundle table from the current bundle state.
-function renderTable() {
-```
-
-CSS: each zone block must have a label comment:
-```css
-/* Zone C — file bundle table */
-#zone-table { … }
-```
+Where a Go idiom is non-obvious (goroutine fan-out, `atomic.Int32`,
+`io.ReadFull` short-read semantics, `sync.Pool`), add a 1–3 line prose
+comment explaining **why**, not just **what**. Treat the reader as someone
+comfortable with another language but still learning Go.
 
 ### 5.4 No external frontend dependencies
 
-Do not add `<script src="...cdn...">` tags, npm packages, or any JS framework.
-The frontend is intentionally dependency-free. Vanilla JS and CSS custom properties suffice.
+No `<script src="...cdn...">` tags. No npm packages. No JS framework.
+Vanilla JS + CSS custom properties only.
 
 ### 5.5 State management in JS
 
-All mutable UI state lives in explicitly declared `let` variables at the top of `app.js`,
-grouped under a `// --- State ---` comment block:
-
-```js
-// --- State ---
-let bundle     = [];   // array of FileMeta objects currently in the table
-let outputPath = '';   // user-selected output directory
-```
-
-No state is stored in DOM attributes or `data-*` properties. The DOM is always derived from
-state — never the source of truth.
+All mutable UI state lives in explicitly declared `let` variables at the
+top of `table.js` (`bundle`, `outputPath`). The DOM is always derived from
+state — never the source of truth. No state in `data-*` attributes except
+transient click-target indices.
 
 ### 5.6 No inline styles or scripts
 
 - No `style="..."` attributes in HTML.
 - No `<style>` blocks in HTML.
 - No `onclick=""` or other inline event handlers.
-- All styling goes in `styles.css`. All logic goes in `app.js`.
+- All styling goes in `styles.css`. All logic goes in `app.js` / `table.js`.
 
 ### 5.7 Wails version lock
 
-Do not upgrade Wails (currently `v2.12.0`) without explicit instruction. Do not add new Go
-dependencies without confirming they are cross-platform and do not require CGo beyond what
-Wails already manages.
+Do not upgrade Wails (currently `v2.12.0`) without explicit instruction. Do
+not add new Go dependencies without confirming they are cross-platform and
+do not require CGo beyond what Wails already manages.
+
+### 5.8 No CGo for image work
+
+`Rosca75/heic` and `gen2brain/webp` use `purego` + bundled WASM. This is
+intentional — it means the Windows binary runs on a fresh machine with no
+libraries to install. Do **not** reintroduce CGo-based image libraries
+(e.g. ImageMagick bindings, `goheif` with CGo libheif).
+
+### 5.9 Quality slider semantics per format
+
+- **JPG / WebP**: true lossy quality, passed directly (1..100).
+- **PNG**: lossless; slider picks `NoCompression` (≤33) / `DefaultCompression`
+  (≤66) / `BestCompression` (>66).
+- **TIFF**: lossless; slider ≤33 → `Uncompressed`, >33 → `Deflate + Predictor`.
+- The frontend hint text (`#qualityHint`) reflects these semantics and must
+  update whenever the format selector changes.
+
+---
+
+## 6. CI / Release
+
+- `.github/workflows/ci.yml` runs `go vet`, `gofmt -l .`, `go build`, and
+  `go test` on every push / PR to `main`, across `ubuntu-latest`,
+  `windows-latest`, `macos-latest`. Ubuntu installs
+  `libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config` before building.
+- `.github/workflows/release.yml` triggers on tag push matching `v*`, builds
+  `heic-converter.exe` (Windows) and `heic-converter-linux` (Linux, built
+  with `-tags webkit2_41` for Ubuntu 24.04), then creates a GitHub Release
+  with both binaries attached.
+- Both binaries are self-contained: the HEIC WASM decoder and webp encoder
+  are bundled. Users do **not** need libheif or ImageMagick installed.

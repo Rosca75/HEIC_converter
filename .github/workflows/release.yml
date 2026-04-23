@@ -1,0 +1,123 @@
+name: Release
+
+# Triggers when a version tag is pushed (e.g. `git tag v1.1.0 && git push origin v1.1.0`)
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+
+  # ──────────────────────────────────────────────────────────────
+  # Windows build — produces heic-converter.exe
+  # Must run on windows-latest: Wails embeds WebView2 which
+  # requires Windows SDK headers at compile time.
+  # ──────────────────────────────────────────────────────────────
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Set up Node.js (required by Wails to bundle the frontend)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build Windows binary
+        # -o writes the output to build/bin/ with the given filename.
+        run: wails build -platform windows/amd64 -o heic-converter.exe
+
+      - name: Upload Windows binary as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-binary
+          path: build/bin/heic-converter.exe
+
+  # ──────────────────────────────────────────────────────────────
+  # Linux build — produces heic-converter-linux (ELF amd64)
+  # Must run on ubuntu-latest: Wails uses WebKit2GTK which requires
+  # GTK3 + WebKit2GTK dev headers at compile time.
+  #
+  # Ubuntu 24.04 ships webkit2gtk-4.1, not 4.0. The Wails fix is to
+  # install libwebkit2gtk-4.1-dev and pass `-tags webkit2_41` to the
+  # build command to activate Wails' built-in 4.1 support.
+  # ──────────────────────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Set up Node.js (required by Wails to bundle the frontend)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Linux system dependencies
+        # libgtk-3-dev           -> GTK3 headers (Wails window chrome)
+        # libwebkit2gtk-4.1-dev  -> WebKit2GTK headers (Ubuntu 24.04 package name)
+        # pkg-config             -> used by cgo to locate the above libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev pkg-config
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build Linux binary
+        # -tags webkit2_41 activates Wails' built-in webkit2gtk-4.1 support,
+        # required on Ubuntu 24.04 where webkit2gtk-4.0 no longer exists.
+        run: wails build -platform linux/amd64 -o heic-converter-linux -tags webkit2_41
+
+      - name: Upload Linux binary as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary
+          path: build/bin/heic-converter-linux
+
+  # ──────────────────────────────────────────────────────────────
+  # Release — waits for both builds, then creates the GitHub
+  # Release and attaches the two binaries as downloadable assets.
+  # ──────────────────────────────────────────────────────────────
+  release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-binary
+          path: artifacts/
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binary
+          path: artifacts/
+
+      - name: Create GitHub Release and attach binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/heic-converter.exe
+            artifacts/heic-converter-linux
+          generate_release_notes: true
